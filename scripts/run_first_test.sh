@@ -1,0 +1,241 @@
+#!/bin/bash
+# Phase 1: run Crazyflie firmware in Bitcraze Renode with canned sensor feeds.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+RENODE_DIR="${RENODE_DIR:-${ROOT}/build/renode-cf}"
+ELF="${ELF:-${ROOT}/firmware/cf2.elf}"
+AUTO_START="${AUTO_START:-1}"
+USE_DOCKER="${DOCKER:-0}"
+RENODE_MONITOR_PORT="${RENODE_MONITOR_PORT:-}"
+RENODE_DOCKER_IMAGE="${RENODE_DOCKER_IMAGE:-renode-cf-runner:22.04}"
+
+check_ports() {
+  local ports=(1234 3333 3456)
+  if [ -n "${RENODE_MONITOR_PORT}" ]; then
+    ports+=("${RENODE_MONITOR_PORT}")
+  fi
+  local busy=()
+  local p
+
+  for p in "${ports[@]}"; do
+    if ss -tln 2>/dev/null | awk '{print $4}' | grep -q ":${p}$"; then
+      busy+=("${p}")
+    fi
+  done
+
+  if [ "${#busy[@]}" -eq 0 ]; then
+    return 0
+  fi
+
+  echo "Ports already in use: ${busy[*]}"
+  echo "A previous Renode run is probably still active (often a leftover DOCKER=1 session on :1234)."
+  echo "Try:"
+  echo "  docker ps"
+  echo "  docker stop <container-id>    # ubuntu:22.04 running ./renode"
+  echo "  pkill -f 'renode.*crazyflie_canned'"
+  return 1
+}
+
+prepare_renode_runtime() {
+  local renode_lib="${RENODE_DIR}/output/bin/Release"
+  local libdl_target="/lib/x86_64-linux-gnu/libdl.so.2"
+
+  if [ ! -d "${renode_lib}" ]; then
+    echo "ERROR: ${renode_lib} missing — run ./scripts/setup_renode_cf.sh"
+    exit 1
+  fi
+
+  # Mono DllImport("dl") expects libdl.so; Ubuntu ships only libdl.so.2.
+  if [ ! -e "${renode_lib}/libdl.so" ] && [ -f "${libdl_target}" ]; then
+    ln -sf "${libdl_target}" "${renode_lib}/libdl.so"
+  fi
+
+  # ROS/Gazebo LD_LIBRARY_PATH can shadow system libs and break native CPU models.
+  export LD_LIBRARY_PATH="${renode_lib}"
+}
+
+check_mono_deps() {
+  if dpkg -s mono-complete >/dev/null 2>&1 && dpkg -s libzmq5 >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local missing=()
+  dpkg -s mono-complete >/dev/null 2>&1 || missing+=(mono-complete)
+  dpkg -s libzmq5 >/dev/null 2>&1 || missing+=(libzmq5)
+
+  echo "Renode needs the full Mono runtime (System.Drawing, Mono.Posix, etc.), not just mono-runtime."
+  echo "Missing packages: ${missing[*]}"
+  echo "Install with:"
+  echo "  sudo apt-get install -y mono-complete libzmq5"
+  echo "Or run without installing Mono on the host:"
+  echo "  DOCKER=1 ./scripts/run_first_test.sh"
+  return 1
+}
+
+run_docker() {
+  local docker_tty=()
+  if [ -t 0 ]; then
+    docker_tty=(-it)
+  fi
+
+  if ! docker image inspect "${RENODE_DOCKER_IMAGE}" >/dev/null 2>&1; then
+    echo "Docker image ${RENODE_DOCKER_IMAGE} not found — building once (Mono install, ~2–5 min) ..."
+    "${SCRIPT_DIR}/build_docker_runner.sh"
+  fi
+
+  local renode_cli=(./renode --disable-xwt)
+  if [ -n "${RENODE_MONITOR_PORT}" ]; then
+    # -P and --console are exclusive in Renode; socket monitor needs no --console.
+    renode_cli+=(-P "${RENODE_MONITOR_PORT}")
+  else
+    renode_cli+=(--console)
+  fi
+  renode_cli+=(crazyflie_canned.resc)
+
+  echo "Running Renode in Docker (${RENODE_DOCKER_IMAGE}, --net=host for GDB :3333) ..."
+  if [ -n "${RENODE_MONITOR_PORT}" ]; then
+    echo "  monitor:  nc localhost ${RENODE_MONITOR_PORT}   (or ./scripts/monitor_cpu.sh ${RENODE_MONITOR_PORT})"
+  fi
+  docker run --rm "${docker_tty[@]}" --net=host \
+    -v "${RENODE_DIR}:/renode-cf:rw" \
+    -w /renode-cf \
+    "${RENODE_DOCKER_IMAGE}" \
+    /bin/bash -c "set -euo pipefail
+      ln -sf /lib/x86_64-linux-gnu/libdl.so.2 output/bin/Release/libdl.so 2>/dev/null || true
+      export LD_LIBRARY_PATH=/renode-cf/output/bin/Release
+      exec ${renode_cli[*]}
+    "
+}
+
+if [ ! -f "${ELF}" ]; then
+  echo "Missing ${ELF}"
+  echo "Run: ./scripts/build_firmware.sh"
+  exit 1
+fi
+
+if [ ! -x "${RENODE_DIR}/renode" ] && [ ! -f "${RENODE_DIR}/renode" ]; then
+  # built layouts vary: output/bin/Release/... or ./renode wrapper
+  if [ -x "${ROOT}/bin/renode-cf" ]; then
+    RENODE_BIN="${ROOT}/bin/renode-cf"
+  else
+    echo "Renode-CF not found at ${RENODE_DIR}/renode"
+    echo "Run: ./scripts/setup_renode_cf.sh"
+    exit 1
+  fi
+else
+  RENODE_BIN="${RENODE_DIR}/renode"
+fi
+
+if [ ! -f "${RENODE_DIR}/platforms/boards/cf2.repl" ]; then
+  echo "ERROR: ${RENODE_DIR}/platforms/boards/cf2.repl missing"
+  echo "Need Bitcraze renode branch crazyflie (./scripts/setup_renode_cf.sh)"
+  exit 1
+fi
+
+# Run from Renode root so @platforms/... resolves; put ELF where @cf2.elf finds it.
+# Docker bind-mounts only build/renode-cf — a symlink to firmware/cf2.elf breaks inside the container.
+patch_monitor_py() {
+  local monitor_py="${RENODE_DIR}/scripts/monitor.py"
+  local backup="${monitor_py}.swarm_orig"
+  local marker="# --- swarm monitor_cf patch ---"
+
+  if [ ! -f "${backup}" ]; then
+    cp -f "${monitor_py}" "${backup}"
+  fi
+
+  cp -f "${backup}" "${monitor_py}"
+  {
+    echo ""
+    echo "${marker}"
+    cat "${ROOT}/scripts/monitor_cf.py"
+  } >> "${monitor_py}"
+}
+
+cp -f "${ELF}" "${RENODE_DIR}/cf2.elf"
+cp -f "${ROOT}/resc/crazyflie_canned.resc" "${RENODE_DIR}/crazyflie_canned.resc"
+patch_monitor_py
+
+# Ensure resc uses @cf2.elf (cwd = RENODE_DIR)
+cat > "${RENODE_DIR}/crazyflie_canned.resc" << 'EOF'
+:description: Crazyflie 2.1 + canned sensors (phase 1)
+
+mach create "CF2.1"
+machine LoadPlatformDescription @platforms/boards/cf2.repl
+
+sysbus.otp WriteString 0x7800 "0;CF21"
+showAnalyzer sysbus.usart3
+sysbus LoadELF @cf2.elf
+
+emulation CreateUARTHub "syslink"
+connector Connect sysbus.usart6 syslink
+connector Connect sysbus.nrf syslink
+syslink Start
+
+machine StartGdbServer 3333
+emulation CreateServerSocketTerminal 3456 "sensors"
+connector Connect sysbus.i2c3.bmi_gyro sensors
+
+logLevel -1 console sysbus.gpioPortD.ledB
+logLevel -1 console sysbus.gpioPortC.ledRL
+logLevel -1 console sysbus.gpioPortC.ledGL
+logLevel -1 console sysbus.gpioPortC.ledGR
+logLevel -1 console sysbus.gpioPortC.ledRR
+logLevel -1 console sysbus.rtc
+logLevel -1 console sysbus.timer7
+
+sysbus.i2c3.bmi_gyro FeedGyroSample 10 20 30 2
+sysbus.i2c3.bmi_gyro FeedGyroSample 0 0 0 20
+sysbus.i2c3.bmi_accel FeedAccSample 0 0 1000 20
+sysbus.i2c3.bmp_baro FeedPTSample 101325 25 20
+
+echo "Phase 1 loaded. GDB :3333  sensor socket :3456"
+echo "Monitor tips: pause | cpu_stats | sysbus.cpu PC | start | quit"
+echo "Feed more: sysbus.i2c3.bmi_gyro FeedGyroSample 0 0 0 10"
+EOF
+
+if [ "${AUTO_START}" = "1" ]; then
+  echo 'start' >> "${RENODE_DIR}/crazyflie_canned.resc"
+fi
+
+echo "=== Crazyflie Renode first test ==="
+echo "  renode: ${RENODE_BIN}"
+echo "  elf:    ${ELF}"
+echo "  gdb:    target remote localhost:3333"
+echo "  sensors socket: localhost:3456"
+echo "  quit:   type quit in the Renode monitor to exit"
+if [ -n "${RENODE_MONITOR_PORT}" ]; then
+  echo "  monitor: nc localhost ${RENODE_MONITOR_PORT}"
+  echo "  stats:   ./scripts/monitor_cpu.sh ${RENODE_MONITOR_PORT}"
+fi
+echo
+echo "Monitor (at the CF2.1 prompt):"
+echo "  1) pause          # stop emulation so typing is readable"
+echo "  2) cpu_stats       # instruction rate / util % / sim speed"
+echo "  3) sysbus.cpu PC  # program counter (run twice to compare)"
+echo "  4) start          # resume"
+echo "  Wrong: exit, Ctrl+C, tui — use quit"
+echo
+
+cd "${RENODE_DIR}"
+check_ports
+prepare_renode_runtime
+
+RENODE_ARGS=(--disable-xwt)
+if [ -n "${RENODE_MONITOR_PORT}" ]; then
+  RENODE_ARGS+=(-P "${RENODE_MONITOR_PORT}")
+else
+  RENODE_ARGS+=(--console)
+fi
+
+if [ "${USE_DOCKER}" = "1" ]; then
+  run_docker
+elif check_mono_deps; then
+  exec "${RENODE_BIN}" "${RENODE_ARGS[@]}" crazyflie_canned.resc
+elif command -v docker >/dev/null 2>&1; then
+  echo "Falling back to DOCKER=1 ..."
+  run_docker
+else
+  exit 1
+fi

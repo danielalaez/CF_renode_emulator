@@ -1,0 +1,14 @@
+# Runtime image for DOCKER=1 ./scripts/run_first_test.sh
+# Build once: ./scripts/build_docker_runner.sh
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      mono-complete \
+      libzmq5 \
+      ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /renode-cf

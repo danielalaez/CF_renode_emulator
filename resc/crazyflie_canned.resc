@@ -1,0 +1,31 @@
+:description: Crazyflie 2.1 on Bitcraze Renode + canned IMU samples (phase 1).
+# Run via ./scripts/run_first_test.sh (sets cwd to Renode root, links cf2.elf).
+
+mach create "CF2.1"
+machine LoadPlatformDescription @platforms/boards/cf2.repl
+
+sysbus.otp WriteString 0x7800 "0;CF21"
+showAnalyzer sysbus.usart3
+sysbus LoadELF @cf2.elf
+
+emulation CreateUARTHub "syslink"
+connector Connect sysbus.usart6 syslink
+connector Connect sysbus.nrf syslink
+syslink Start
+
+machine StartGdbServer 3333
+emulation CreateServerSocketTerminal 3456 "sensors"
+connector Connect sysbus.i2c3.bmi_gyro sensors
+
+logLevel -1 console sysbus.gpioPortD.ledB
+logLevel -1 console sysbus.gpioPortC.ledRL
+logLevel -1 console sysbus.gpioPortC.ledGL
+logLevel -1 console sysbus.gpioPortC.ledGR
+logLevel -1 console sysbus.gpioPortC.ledRR
+
+# Canned gyro samples — needed for sensor init / self-test
+sysbus.i2c3.bmi_gyro FeedGyroSample 10 20 30 2
+sysbus.i2c3.bmi_gyro FeedGyroSample 0 0 0 20
+
+echo @"Phase 1 RESC ready. GDB :3333  sensor socket :3456"
+start

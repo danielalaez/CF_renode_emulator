@@ -1,0 +1,25 @@
+# Generated / large (do not publish)
+build/
+bin/
+firmware/*.elf
+firmware/*.hex
+firmware/*.bin
+firmware/*.map
+
+# Local overrides / backups
+*.resc.bak
+*.swarm_orig
+scripts/monitor.py.swarm_orig
+
+# Python / editor
+__pycache__/
+*.pyc
+.Python
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# Logs
+*.log
