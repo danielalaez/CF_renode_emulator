@@ -1,0 +1,191 @@
+#VRML_SIM R2025a utf8
+# Simple CF2.1-ish quadrotor for Renode↔Webots bridge bring-up.
+# Mass ~27 g; X-layout props; gyro/accel/IMU; motors m1..m4.
+# Propeller API (R2025a): no name/translation — wrap in Pose; use thrustConstants SFVec2f.
+
+PROTO CrazyflieSimple [
+  field SFVec3f    translation  0 0 0.03
+  field SFRotation rotation     0 0 1 0
+  field SFString   name         "crazyflie"
+  field SFString   controller   "<extern>"
+  field SFBool     supervisor   TRUE
+]
+{
+  Robot {
+    translation IS translation
+    rotation IS rotation
+    name IS name
+    controller IS controller
+    supervisor IS supervisor
+    children [
+      DEF BODY Shape {
+        appearance PBRAppearance {
+          baseColor 0.12 0.12 0.14
+          roughness 0.55
+          metalness 0.25
+        }
+        geometry Box {
+          size 0.092 0.092 0.029
+        }
+      }
+      Accelerometer {
+        name "accelerometer"
+        xAxis TRUE
+        yAxis TRUE
+        zAxis TRUE
+      }
+      Gyro {
+        name "gyro"
+        xAxis TRUE
+        yAxis TRUE
+        zAxis TRUE
+      }
+      InertialUnit {
+        name "inertial unit"
+        xAxis TRUE
+        yAxis TRUE
+        zAxis TRUE
+      }
+      # M1 front-left (+X,+Y)
+      Pose {
+        translation 0.0325 0.0325 0.01
+        children [
+          Propeller {
+            shaftAxis 0 0 1
+            centerOfThrust 0 0 0
+            # thrust ≈ c0 * ω²  — scaled so ω~500 rad/s gives ~0.07 N (~hover/4)
+            thrustConstants 2.8e-7 0
+            torqueConstants 1.0e-8 0
+            device RotationalMotor {
+              name "m1"
+              maxVelocity 2000
+              maxTorque 0.05
+            }
+            fastHelix Solid {
+              children [
+                Shape {
+                  appearance PBRAppearance {
+                    baseColor 0.2 0.2 0.25
+                    roughness 0.8
+                    metalness 0
+                  }
+                  geometry Cylinder {
+                    height 0.002
+                    radius 0.023
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+      # M2 aft-left (-X,+Y)
+      Pose {
+        translation -0.0325 0.0325 0.01
+        children [
+          Propeller {
+            shaftAxis 0 0 1
+            centerOfThrust 0 0 0
+            thrustConstants 2.8e-7 0
+            torqueConstants 1.0e-8 0
+            device RotationalMotor {
+              name "m2"
+              maxVelocity 2000
+              maxTorque 0.05
+            }
+            fastHelix Solid {
+              children [
+                Shape {
+                  appearance PBRAppearance {
+                    baseColor 0.2 0.2 0.25
+                    roughness 0.8
+                    metalness 0
+                  }
+                  geometry Cylinder {
+                    height 0.002
+                    radius 0.023
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+      # M3 aft-right (-X,-Y)
+      Pose {
+        translation -0.0325 -0.0325 0.01
+        children [
+          Propeller {
+            shaftAxis 0 0 1
+            centerOfThrust 0 0 0
+            thrustConstants 2.8e-7 0
+            torqueConstants 1.0e-8 0
+            device RotationalMotor {
+              name "m3"
+              maxVelocity 2000
+              maxTorque 0.05
+            }
+            fastHelix Solid {
+              children [
+                Shape {
+                  appearance PBRAppearance {
+                    baseColor 0.2 0.2 0.25
+                    roughness 0.8
+                    metalness 0
+                  }
+                  geometry Cylinder {
+                    height 0.002
+                    radius 0.023
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+      # M4 front-right (+X,-Y)
+      Pose {
+        translation 0.0325 -0.0325 0.01
+        children [
+          Propeller {
+            shaftAxis 0 0 1
+            centerOfThrust 0 0 0
+            thrustConstants 2.8e-7 0
+            torqueConstants 1.0e-8 0
+            device RotationalMotor {
+              name "m4"
+              maxVelocity 2000
+              maxTorque 0.05
+            }
+            fastHelix Solid {
+              children [
+                Shape {
+                  appearance PBRAppearance {
+                    baseColor 0.2 0.2 0.25
+                    roughness 0.8
+                    metalness 0
+                  }
+                  geometry Cylinder {
+                    height 0.002
+                    radius 0.023
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+    boundingObject USE BODY
+    physics Physics {
+      density -1
+      mass 0.027
+      centerOfMass [ 0 0 0 ]
+      inertiaMatrix [
+        1.4e-5 1.4e-5 2.2e-5
+        0 0 0
+      ]
+    }
+    contactMaterial "cf"
+  }
+}

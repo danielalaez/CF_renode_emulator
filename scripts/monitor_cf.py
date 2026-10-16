@@ -20,6 +20,9 @@ _stream_n = 0
 _stream_hz = 0.0
 _stream_t0 = 0.0
 _stream_virt0 = 0.0
+# Mutable sample updated by imu_stream_set without restarting the clock.
+# [gx, gy, gz, ax, ay, az, pressure, temp]
+_stream_sample = [0.0, 0.0, 0.0, 0.0, 0.0, 1000.0, 101325.0, 25.0]
 
 
 def mc_cpu_stats():
@@ -195,24 +198,25 @@ def mc_imu_stream_start(hz, gx, gy, gz, ax, ay, az, baro_hz=0, pressure=101325, 
         baro_every = max(1, int(round(rate / float(baro_hz))))
         baro = machine["sysbus.i2c3.bmp_baro"]
 
-    gx_f = float(gx)
-    gy_f = float(gy)
-    gz_f = float(gz)
-    ax_f = float(ax)
-    ay_f = float(ay)
-    az_f = float(az)
-    pressure_f = float(pressure)
-    temp_f = float(temp)
+    _stream_sample[0] = float(gx)
+    _stream_sample[1] = float(gy)
+    _stream_sample[2] = float(gz)
+    _stream_sample[3] = float(ax)
+    _stream_sample[4] = float(ay)
+    _stream_sample[5] = float(az)
+    _stream_sample[6] = float(pressure)
+    _stream_sample[7] = float(temp)
 
     def on_tick():
         global _stream_n
         try:
-            gyro.FeedGyroSample(gx_f, gy_f, gz_f, 1)
-            accel.FeedAccSample(ax_f, ay_f, az_f, 1)
+            s = _stream_sample
+            gyro.FeedGyroSample(s[0], s[1], s[2], 1)
+            accel.FeedAccSample(s[3], s[4], s[5], 1)
             gyro.TriggerDataInterrupt()
             n = _stream_n
             if baro is not None and baro_every > 0 and (n % baro_every) == 0:
-                baro.FeedPTSample(pressure_f, temp_f, 1)
+                baro.FeedPTSample(s[6], s[7], 1)
             _stream_n = n + 1
         except Exception:
             pass
@@ -235,6 +239,22 @@ def mc_imu_stream_start(hz, gx, gy, gz, ax, ay, az, baro_hz=0, pressure=101325, 
     _stream_t0 = time.time()
     _stream_virt0 = _virt_seconds()
     print "stream=started hz=%.1f baro_hz=%.1f mode=clock" % (rate, float(baro_hz))
+
+
+def mc_imu_stream_set(gx, gy, gz, ax, ay, az, pressure=101325, temp=25):
+    """Update live IMU/baro sample used by the running ClockSource feeder."""
+    if _stream_handler is None:
+        print "error=stream not running (imu_stream_start first)"
+        return
+    _stream_sample[0] = float(gx)
+    _stream_sample[1] = float(gy)
+    _stream_sample[2] = float(gz)
+    _stream_sample[3] = float(ax)
+    _stream_sample[4] = float(ay)
+    _stream_sample[5] = float(az)
+    _stream_sample[6] = float(pressure)
+    _stream_sample[7] = float(temp)
+    print "stream=updated"
 
 
 def mc_imu_stream_status():
@@ -332,3 +352,283 @@ def mc_preflight_status():
         preflight_ok, state, name, can_fly, is_armed, is_flying,
         is_tumbled, is_crashed, info, cond, tumbled_c, deck_c,
     )
+
+
+# motors.c BSS (cf2.elf) - motor_ratios[4] uint16, motorPowerSet[4], motorSetEnable
+_MOTOR_RATIOS_ADDR = 0x200053C6
+_MOTOR_POWER_SET_ADDR = 0x200053BC
+_MOTOR_SET_ENABLE_ADDR = 0x200053C4
+# STM32 TIM CCR: TIM2@0x40000000, TIM4@0x40000800; CCRn @ 0x34+4*(n-1)
+_TIM2_BASE = 0x40000000
+_TIM4_BASE = 0x40000800
+_CCR_OFF = (0, 0x34, 0x38, 0x3C, 0x40)  # 1-indexed
+
+
+def _read_u16(bus, addr):
+    return int(bus.ReadByte(addr)) | (int(bus.ReadByte(addr + 1)) << 8)
+
+
+def _write_u16(bus, addr, value):
+    v = int(value) & 0xFFFF
+    bus.WriteByte(addr, v & 0xFF)
+    bus.WriteByte(addr + 1, (v >> 8) & 0xFF)
+
+
+def _ratio_to_ccr_bits(ratio):
+    # motorsConv16ToBits: MOTORS_PWM_BITS=8 -> top 8 bits
+    return (int(ratio) >> 8) & 0xFF
+
+
+def mc_motor_stats():
+    """Read motor_ratios[m1..m4] (0..65535) and TIM CCR duty bits."""
+    machine = _require_machine()
+    if machine is None:
+        return
+    bus = machine.SystemBus
+    paused = machine.ObtainPausedState()
+    try:
+        r = []
+        i = 0
+        while i < 4:
+            r.append(_read_u16(bus, _MOTOR_RATIOS_ADDR + 2 * i))
+            i += 1
+        # M1=TIM2_CH2, M2=TIM2_CH4, M3=TIM2_CH1, M4=TIM4_CH4
+        ccr_m1 = long(bus.ReadDoubleWord(_TIM2_BASE + _CCR_OFF[2])) & 0xFFFF
+        ccr_m2 = long(bus.ReadDoubleWord(_TIM2_BASE + _CCR_OFF[4])) & 0xFFFF
+        ccr_m3 = long(bus.ReadDoubleWord(_TIM2_BASE + _CCR_OFF[1])) & 0xFFFF
+        ccr_m4 = long(bus.ReadDoubleWord(_TIM4_BASE + _CCR_OFF[4])) & 0xFFFF
+        enable = int(bus.ReadByte(_MOTOR_SET_ENABLE_ADDR))
+    finally:
+        paused.Dispose()
+    print (
+        "m1=%d m2=%d m3=%d m4=%d "
+        "ccr_m1=%d ccr_m2=%d ccr_m3=%d ccr_m4=%d enable=%d "
+        "n1=%.4f n2=%.4f n3=%.4f n4=%.4f"
+    ) % (
+        r[0], r[1], r[2], r[3],
+        ccr_m1, ccr_m2, ccr_m3, ccr_m4,
+        enable,
+        r[0] / 65535.0, r[1] / 65535.0, r[2] / 65535.0, r[3] / 65535.0,
+    )
+
+
+def mc_motor_force(m1, m2, m3, m4):
+    """Open-loop: set motorPowerSet + motorSetEnable=1 so stabilizer applies ratios."""
+    machine = _require_machine()
+    if machine is None:
+        return
+    vals = [int(float(m1)), int(float(m2)), int(float(m3)), int(float(m4))]
+    i = 0
+    while i < 4:
+        if vals[i] < 0:
+            vals[i] = 0
+        if vals[i] > 65535:
+            vals[i] = 65535
+        i += 1
+    bus = machine.SystemBus
+    paused = machine.ObtainPausedState()
+    try:
+        i = 0
+        while i < 4:
+            _write_u16(bus, _MOTOR_POWER_SET_ADDR + 2 * i, vals[i])
+            _write_u16(bus, _MOTOR_RATIOS_ADDR + 2 * i, vals[i])
+            i += 1
+        bus.WriteByte(_MOTOR_SET_ENABLE_ADDR, 1)
+        # Mirror into TIM CCR (brushed 8-bit PWM)
+        bus.WriteDoubleWord(_TIM2_BASE + _CCR_OFF[2], _ratio_to_ccr_bits(vals[0]))  # M1 CH2
+        bus.WriteDoubleWord(_TIM2_BASE + _CCR_OFF[4], _ratio_to_ccr_bits(vals[1]))  # M2 CH4
+        bus.WriteDoubleWord(_TIM2_BASE + _CCR_OFF[1], _ratio_to_ccr_bits(vals[2]))  # M3 CH1
+        bus.WriteDoubleWord(_TIM4_BASE + _CCR_OFF[4], _ratio_to_ccr_bits(vals[3]))  # M4 CH4
+    finally:
+        paused.Dispose()
+    print "forced m1=%d m2=%d m3=%d m4=%d enable=1" % (vals[0], vals[1], vals[2], vals[3])
+
+
+def mc_motor_force_clear():
+    """Zero motorPowerSet/ratios/CCR and clear motorSetEnable."""
+    machine = _require_machine()
+    if machine is None:
+        return
+    bus = machine.SystemBus
+    paused = machine.ObtainPausedState()
+    try:
+        i = 0
+        while i < 4:
+            _write_u16(bus, _MOTOR_POWER_SET_ADDR + 2 * i, 0)
+            _write_u16(bus, _MOTOR_RATIOS_ADDR + 2 * i, 0)
+            i += 1
+        bus.WriteByte(_MOTOR_SET_ENABLE_ADDR, 0)
+        bus.WriteDoubleWord(_TIM2_BASE + _CCR_OFF[1], 0)
+        bus.WriteDoubleWord(_TIM2_BASE + _CCR_OFF[2], 0)
+        bus.WriteDoubleWord(_TIM2_BASE + _CCR_OFF[4], 0)
+        bus.WriteDoubleWord(_TIM4_BASE + _CCR_OFF[4], 0)
+    finally:
+        paused.Dispose()
+    print "force_cleared enable=0"
+
+
+# ---------------------------------------------------------------------------
+# Setpoint injection (Option C): overwrite FreeRTOS setpointQueue storage.
+# sizeof(setpoint_t)=0x80; queue length 1 @ CCM. Refresh timestamp from xTickCount
+# so supervisor commander WDT (~500 ms warn / ~2 s shutdown) stays happy.
+# Layout assumes -fshort-enums (verified via DWARF / nm size on cf2.elf).
+# ---------------------------------------------------------------------------
+_SETPOINT_QUEUE_STORAGE = 0x100066C8  # osSys_setpointQueueStorage
+_PRIORITY_QUEUE_STORAGE = 0x10006798  # osSys_priorityQueueStorage
+_XTICK_COUNT_ADDR = 0x20016A20        # xTickCount
+_STABILIZER_SETPOINT = 0x2000B960     # stabilizer.c static setpoint (debug mirror)
+_COMMANDER_PRIORITY_CRTP = 2
+_COMMANDER_PRIORITY_DISABLE = 0
+_SETPOINT_SIZE = 0x80
+# Field offsets inside setpoint_t
+_SP_OFF_TIMESTAMP = 0
+_SP_OFF_ATT_ROLL = 8
+_SP_OFF_ATT_PITCH = 12
+_SP_OFF_ATT_YAW = 16
+_SP_OFF_RATE_YAW = 32
+_SP_OFF_THRUST = 52
+_SP_OFF_VEL_BODY = 120
+_SP_OFF_MODE_X = 121
+_SP_OFF_MODE_Y = 122
+_SP_OFF_MODE_Z = 123
+_SP_OFF_MODE_ROLL = 124
+_SP_OFF_MODE_PITCH = 125
+_SP_OFF_MODE_YAW = 126
+# stab_mode_t
+_MODE_DISABLE = 0
+_MODE_ABS = 1
+_MODE_VELOCITY = 2
+
+
+def _write_f32(bus, addr, value):
+    from System import BitConverter, Single
+    b = BitConverter.GetBytes(Single(float(value)))
+    i = 0
+    while i < 4:
+        bus.WriteByte(addr + i, int(b[i]) & 0xFF)
+        i += 1
+
+
+def _read_f32(bus, addr):
+    """Decode little-endian float32 via BitConverter (IronPython-safe)."""
+    from System import Array, BitConverter, Byte
+    b = Array.CreateInstance(Byte, 4)
+    b[0] = bus.ReadByte(addr)
+    b[1] = bus.ReadByte(addr + 1)
+    b[2] = bus.ReadByte(addr + 2)
+    b[3] = bus.ReadByte(addr + 3)
+    return float(BitConverter.ToSingle(b, 0))
+
+
+def _zero_setpoint_blob(bus, base):
+    i = 0
+    while i < _SETPOINT_SIZE:
+        bus.WriteByte(base + i, 0)
+        i += 1
+
+
+def _pack_rpyt_setpoint(bus, base, roll, pitch, yaw_rate, thrust, tick):
+    """Legacy RPYT-style: roll/pitch abs deg, yaw rate deg/s, thrust 0..65535."""
+    _zero_setpoint_blob(bus, base)
+    bus.WriteDoubleWord(base + _SP_OFF_TIMESTAMP, long(tick) & 0xFFFFFFFF)
+    _write_f32(bus, base + _SP_OFF_ATT_ROLL, roll)
+    _write_f32(bus, base + _SP_OFF_ATT_PITCH, pitch)
+    _write_f32(bus, base + _SP_OFF_ATT_YAW, 0.0)
+    _write_f32(bus, base + _SP_OFF_RATE_YAW, -float(yaw_rate))  # legacy inverted
+    thr = float(thrust)
+    if thr < 0:
+        thr = 0.0
+    if thr > 60000.0:
+        thr = 60000.0
+    _write_f32(bus, base + _SP_OFF_THRUST, thr)
+    bus.WriteByte(base + _SP_OFF_VEL_BODY, 0)
+    bus.WriteByte(base + _SP_OFF_MODE_X, _MODE_DISABLE)
+    bus.WriteByte(base + _SP_OFF_MODE_Y, _MODE_DISABLE)
+    bus.WriteByte(base + _SP_OFF_MODE_Z, _MODE_DISABLE)
+    bus.WriteByte(base + _SP_OFF_MODE_ROLL, _MODE_ABS)
+    bus.WriteByte(base + _SP_OFF_MODE_PITCH, _MODE_ABS)
+    bus.WriteByte(base + _SP_OFF_MODE_YAW, _MODE_VELOCITY)
+
+
+def mc_setpoint_rpyt(roll, pitch, yaw, thrust):
+    """Inject RPYT setpoint into commander queue (keeps WDT alive)."""
+    machine = _require_machine()
+    if machine is None:
+        return
+    bus = machine.SystemBus
+    tick = 0
+    paused = machine.ObtainPausedState()
+    try:
+        tick = long(bus.ReadDoubleWord(_XTICK_COUNT_ADDR))
+        _pack_rpyt_setpoint(
+            bus, _SETPOINT_QUEUE_STORAGE,
+            float(roll), float(pitch), float(yaw), float(thrust), tick,
+        )
+        # Mirror into stabilizer setpoint for observability
+        _pack_rpyt_setpoint(
+            bus, _STABILIZER_SETPOINT,
+            float(roll), float(pitch), float(yaw), float(thrust), tick,
+        )
+        bus.WriteDoubleWord(_PRIORITY_QUEUE_STORAGE, _COMMANDER_PRIORITY_CRTP)
+        # lastUpdate is overwritten by commanderGetSetpoint from setpoint.timestamp
+    finally:
+        paused.Dispose()
+    print (
+        "setpoint_rpyt roll=%.2f pitch=%.2f yaw=%.2f thrust=%.0f prio=%d tick=%d"
+    ) % (float(roll), float(pitch), float(yaw), float(thrust),
+         _COMMANDER_PRIORITY_CRTP, tick)
+
+
+def mc_setpoint_hover(thrust=35000):
+    """Level attitude + fixed thrust (hover-ish open attitude)."""
+    mc_setpoint_rpyt(0, 0, 0, thrust)
+
+
+def mc_setpoint_clear():
+    """Null setpoint + disable priority (motors should idle/cut)."""
+    machine = _require_machine()
+    if machine is None:
+        return
+    bus = machine.SystemBus
+    paused = machine.ObtainPausedState()
+    try:
+        tick = long(bus.ReadDoubleWord(_XTICK_COUNT_ADDR))
+        _zero_setpoint_blob(bus, _SETPOINT_QUEUE_STORAGE)
+        bus.WriteDoubleWord(_SETPOINT_QUEUE_STORAGE + _SP_OFF_TIMESTAMP, tick)
+        _zero_setpoint_blob(bus, _STABILIZER_SETPOINT)
+        bus.WriteDoubleWord(_STABILIZER_SETPOINT + _SP_OFF_TIMESTAMP, tick)
+        bus.WriteDoubleWord(_PRIORITY_QUEUE_STORAGE, _COMMANDER_PRIORITY_DISABLE)
+    finally:
+        paused.Dispose()
+    print "setpoint_cleared"
+
+
+def mc_setpoint_stats():
+    """Read injected/active setpoint from queue storage + tick age."""
+    machine = _require_machine()
+    if machine is None:
+        return
+    bus = machine.SystemBus
+    paused = machine.ObtainPausedState()
+    try:
+        base = _SETPOINT_QUEUE_STORAGE
+        ts = long(bus.ReadDoubleWord(base + _SP_OFF_TIMESTAMP))
+        tick = long(bus.ReadDoubleWord(_XTICK_COUNT_ADDR))
+        thr = _read_f32(bus, base + _SP_OFF_THRUST)
+        roll = _read_f32(bus, base + _SP_OFF_ATT_ROLL)
+        pitch = _read_f32(bus, base + _SP_OFF_ATT_PITCH)
+        yaw_rate = _read_f32(bus, base + _SP_OFF_RATE_YAW)
+        mx = int(bus.ReadByte(base + _SP_OFF_MODE_X))
+        my = int(bus.ReadByte(base + _SP_OFF_MODE_Y))
+        mz = int(bus.ReadByte(base + _SP_OFF_MODE_Z))
+        mr = int(bus.ReadByte(base + _SP_OFF_MODE_ROLL))
+        mp = int(bus.ReadByte(base + _SP_OFF_MODE_PITCH))
+        myaw = int(bus.ReadByte(base + _SP_OFF_MODE_YAW))
+        prio = long(bus.ReadDoubleWord(_PRIORITY_QUEUE_STORAGE))
+        age = tick - ts if tick >= ts else 0
+    finally:
+        paused.Dispose()
+    print (
+        "thrust=%.0f roll=%.2f pitch=%.2f yaw_rate=%.2f "
+        "mode=xy%d%d z%d rpy%d%d%d prio=%d ts=%d tick=%d age=%d"
+    ) % (thr, roll, pitch, yaw_rate, mx, my, mz, mr, mp, myaw, prio, ts, tick, age)

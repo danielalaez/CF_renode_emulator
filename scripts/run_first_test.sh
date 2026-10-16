@@ -12,7 +12,8 @@ RENODE_MONITOR_PORT="${RENODE_MONITOR_PORT:-}"
 RENODE_DOCKER_IMAGE="${RENODE_DOCKER_IMAGE:-renode-cf-runner:22.04}"
 
 check_ports() {
-  local ports=(1234 3333 3456)
+  # Note: do NOT reserve 1234 — Webots <extern> controllers use that by default.
+  local ports=(3333 3456)
   if [ -n "${RENODE_MONITOR_PORT}" ]; then
     ports+=("${RENODE_MONITOR_PORT}")
   fi
@@ -30,7 +31,7 @@ check_ports() {
   fi
 
   echo "Ports already in use: ${busy[*]}"
-  echo "A previous Renode run is probably still active (often a leftover DOCKER=1 session on :1234)."
+  echo "A previous Renode run is probably still active."
   echo "Try:"
   echo "  docker ps"
   echo "  docker stop <container-id>    # ubuntu:22.04 running ./renode"
@@ -75,11 +76,6 @@ check_mono_deps() {
 }
 
 run_docker() {
-  local docker_tty=()
-  if [ -t 0 ]; then
-    docker_tty=(-it)
-  fi
-
   if ! docker image inspect "${RENODE_DOCKER_IMAGE}" >/dev/null 2>&1; then
     echo "Docker image ${RENODE_DOCKER_IMAGE} not found — building once (Mono install, ~2–5 min) ..."
     "${SCRIPT_DIR}/build_docker_runner.sh"
@@ -94,11 +90,29 @@ run_docker() {
   fi
   renode_cli+=(crazyflie_canned.resc)
 
+  local container_name="${RENODE_DOCKER_NAME:-renode-cf}"
+  # Detach when stdin is not a TTY (log redirect / CI / agent), or RENODE_DETACH=1.
+  local detach=0
+  if [ "${RENODE_DETACH:-0}" = "1" ] || [ ! -t 0 ]; then
+    detach=1
+  fi
+
   echo "Running Renode in Docker (${RENODE_DOCKER_IMAGE}, --net=host for GDB :3333) ..."
   if [ -n "${RENODE_MONITOR_PORT}" ]; then
     echo "  monitor:  nc localhost ${RENODE_MONITOR_PORT}   (or ./scripts/monitor_cpu.sh ${RENODE_MONITOR_PORT})"
   fi
-  docker run --rm "${docker_tty[@]}" --net=host \
+
+  docker rm -f "${container_name}" >/dev/null 2>&1 || true
+
+  local docker_flags=(--name "${container_name}" --net=host)
+  if [ "${detach}" = "1" ]; then
+    docker_flags+=(-d --rm)
+    echo "  container: ${container_name} (detached; logs: docker logs -f ${container_name})"
+  else
+    docker_flags+=(-it --rm)
+  fi
+
+  docker run "${docker_flags[@]}" \
     -v "${RENODE_DIR}:/renode-cf:rw" \
     -w /renode-cf \
     "${RENODE_DOCKER_IMAGE}" \
@@ -107,6 +121,26 @@ run_docker() {
       export LD_LIBRARY_PATH=/renode-cf/output/bin/Release
       exec ${renode_cli[*]}
     "
+
+  if [ "${detach}" = "1" ]; then
+    # Follow logs until Machine started, then leave container running.
+    local i
+    for i in $(seq 1 60); do
+      if docker logs "${container_name}" 2>&1 | grep -q "Machine started"; then
+        echo "Renode ready (detached)."
+        docker logs "${container_name}" 2>&1 | tail -20
+        return 0
+      fi
+      if ! docker ps --filter "name=^${container_name}$" --format '{{.Names}}' | grep -q .; then
+        echo "ERROR: Renode container exited early:" >&2
+        docker logs "${container_name}" 2>&1 | tail -40 >&2
+        return 1
+      fi
+      sleep 1
+    done
+    echo "WARNING: timed out waiting for Machine started; container may still be booting."
+    docker logs "${container_name}" 2>&1 | tail -20
+  fi
 }
 
 if [ ! -f "${ELF}" ]; then
@@ -208,13 +242,16 @@ if [ -n "${RENODE_MONITOR_PORT}" ]; then
 fi
 echo
 echo "Monitor (via -P socket / nc — not the Docker log TTY):"
-echo "  pause | start | quit | cpu_stats | calib_status | preflight_status | imu_stream_*"
+echo "  pause | start | quit | cpu_stats | calib_status | preflight_status | motor_stats | imu_stream_*"
 echo "  Wrong: exit, Ctrl+C, tui — use quit"
 echo
-echo "Phase 2a (wait for Renode log: Machine started):"
+echo "Phase 2 (wait for Renode log: Machine started):"
 echo "  ./scripts/inject_imu_stream.sh ${RENODE_MONITOR_PORT:-9999}"
 echo "  calib:     ./scripts/check_calib.sh ${RENODE_MONITOR_PORT:-9999}"
 echo "  preflight: ./scripts/check_preflight.sh ${RENODE_MONITOR_PORT:-9999}"
+echo "  motors:    ./scripts/monitor_motors.sh ${RENODE_MONITOR_PORT:-9999} --force 20000 20000 20000 20000"
+echo "  setpoint:  ./scripts/check_setpoint.sh ${RENODE_MONITOR_PORT:-9999} 35000"
+echo "  bridge:    python3 -m bridge.webots_renode_bridge --fake --mode closed-loop --wait-preflight --thrust 35000"
 echo
 
 

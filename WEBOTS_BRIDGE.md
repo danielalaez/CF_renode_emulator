@@ -198,25 +198,38 @@ loop:
 2. Confirm self-test, bias, estimator ticking (`cpu_stats`, logs).  
 **Exit:** stabilizer past calibration without canned-only FIFO exhaustion.
 
-### Phase 2b — Motor observability
+### Phase 2b — Motor observability ✅
 
-1. Add `motor_stats` monitor command (ratios or CCR).  
-2. Host poller prints m1..m4 while forcing thrust (patch or CRTP stub).  
-**Exit:** ratios respond to setpoint changes.
+1. `motor_stats` / `motor_force` / `motor_force_clear` in `scripts/monitor_cf.py` (reads `motor_ratios` + TIM CCR).  
+2. Host: `./scripts/monitor_motors.sh 9999 --force …`.  
+**Exit:** forced ratios visible in `motor_stats` (`n1..n4`).
 
-### Phase 2c — Webots plant (open loop)
+### Phase 2c — Webots plant (open loop) ✅ scaffold
 
-1. Minimal `.wbt` + 4 props.  
-2. Bridge: Renode motors → Webots; Webots IMU → Renode.  
-3. Mode `motors-open-loop`.  
+1. `webots/worlds/cf_hover.wbt` + `CrazyflieSimple.proto` + `bridge/` package.  
+2. Dry-run: `python3 -m bridge.webots_renode_bridge --fake --mode motors-open-loop`.  
+3. With Webots: open world (`controller <extern>`), run bridge `--mode motors-open-loop`.  
 **Exit:** craft leaves ground briefly / spins props coherently; firmware does not disarm from WDT.
 
-### Phase 2d — Closed-loop hover
+### Phase 2d — Closed-loop hover (in progress)
 
-1. Stable setpoint source (syslink CRTP or FW hover).  
-2. Tune thrust map + frames.  
-3. Optional baro altitude assist.  
+1. **Setpoint source (Option C):** monitor `setpoint_rpyt` / `setpoint_hover` overwrites
+   FreeRTOS `setpointQueue` storage + refreshes timestamp (beats commander WDT).  
+2. Bridge `--mode closed-loop` clears `motor_force`, injects RPYT each loop, reads
+   `motor_stats`, applies thrusts to Webots/FakePlant, feeds IMU back.  
+3. Tune `ThrustMap.k` / frames; optional baro altitude assist later.  
 **Exit:** CF firmware remains in flying state; Webots hover roughly stable for N seconds.
+
+```bash
+# FakePlant closed-loop (no Webots)
+python3 -m bridge.webots_renode_bridge --fake --mode closed-loop \
+  --wait-preflight --thrust 35000 --seconds 45
+
+# Webots closed-loop
+# (Webots: open cf_hover.wbt) then:
+python3 -m bridge.webots_renode_bridge --mode closed-loop \
+  --wait-preflight --thrust 35000
+```
 
 ### Phase 2e — Hardening (later)
 

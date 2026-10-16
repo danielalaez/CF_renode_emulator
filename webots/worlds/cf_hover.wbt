@@ -1,0 +1,45 @@
+#VRML_SIM R2025a utf8
+# Renode ↔ Webots closed loop using the official Bitcraze Crazyflie PROTO
+# (motors m1_motor..m4_motor + Propeller physics, real mesh).
+# Docs: https://cyberbotics.com/doc/guide/crazyflie
+#
+# Run:
+#   Terminal 1: RENODE_MONITOR_PORT=9999 DOCKER=1 ./scripts/run_first_test.sh
+#   Terminal 2: ./scripts/run_hover_demo.sh   # or bridge --mode closed-loop
+
+EXTERNPROTO "../protos/Crazyflie.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackground.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackgroundLight.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/floors/protos/Floor.proto"
+
+WorldInfo {
+  title "CF Renode ↔ Webots"
+  basicTimeStep 8
+  info [
+    "Official Crazyflie PROTO; motors driven by Renode cf2.elf via host bridge."
+  ]
+}
+
+Viewpoint {
+  orientation -0.2 0.6 0.77 0.7
+  position -0.8 -0.7 0.6
+  follow "crazyflie"
+}
+
+TexturedBackground {
+}
+
+TexturedBackgroundLight {
+}
+
+Floor {
+  size 6 6
+}
+
+Crazyflie {
+  translation 0 0 0.1
+  name "crazyflie"
+  controller "<extern>"
+  supervisor TRUE
+  # Disable the built-in keyboard PID controller — Renode owns control.
+}

@@ -144,22 +144,29 @@ start
 
 Stock Antmicro Renode packages lack Crazyflie models (`BMI088_*`, `BMP388`, `CF_Syslink`). This project builds [bitcraze/renode](https://github.com/bitcraze/renode/tree/crazyflie) branch `crazyflie` with pinned Infrastructure / resources commits (see `setup_renode_cf.sh`).
 
-## Phase 2a — external IMU injection (before Webots)
+## Phase 2 — sensors, motors, Webots bridge
 
 ```bash
 RENODE_MONITOR_PORT=9999 DOCKER=1 ./scripts/run_first_test.sh   # terminal 1
-./scripts/inject_imu_stream.sh 9999                             # terminal 2
+./scripts/check_preflight.sh 9999                               # terminal 2 (IMU + gates)
+# dry-run bridge (FakePlant) — sensors, then setpoint-driven closed-loop:
+python3 -m bridge.webots_renode_bridge --fake --mode sensors-only --wait-calib --seconds 60
+python3 -m bridge.webots_renode_bridge --fake --mode closed-loop \
+  --wait-preflight --thrust 35000 --seconds 45
+# setpoint poke only: ./scripts/check_setpoint.sh 9999 35000
+# motor open-loop:
+./scripts/monitor_motors.sh 9999 --force 20000 20000 20000 20000
 ```
 
-Starts an in-Renode IMU feeder (`imu_stream_start`) so rate is not limited by monitor TCP RTTs.
-Expect `out_hz≈100`. Owns the `-P` socket (exclusive with `monitor_cpu.sh`). Fallback: `--mode burst`.
+| Piece | Role |
+|-------|------|
+| `imu_stream_*` / `imu_stream_set` | Virtual-time IMU+DRDY feeder |
+| `calib_status` / `preflight_status` | Guest RAM gates |
+| `motor_stats` / `motor_force` | Read/override motor ratios |
+| [bridge/](bridge/) | Host Webots↔Renode bridge |
+| [webots/](webots/) | Minimal `cf_hover.wbt` plant |
 
-## Phase 2 docs (Webots closed loop)
-
-| Doc | Content |
-|-----|---------|
-| [FLIGHT_MIN.md](FLIGHT_MIN.md) | Minimum sensors/actuators for init → arm → fly |
-| [WEBOTS_BRIDGE.md](WEBOTS_BRIDGE.md) | Plan to connect Renode (Docker) ↔ Webots via a host bridge |
+Docs: [FLIGHT_MIN.md](FLIGHT_MIN.md), [WEBOTS_BRIDGE.md](WEBOTS_BRIDGE.md), [bridge/README.md](bridge/README.md).
 
 ## Non-goals (phase 1)
 
