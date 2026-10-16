@@ -104,6 +104,8 @@ With `RENODE_MONITOR_PORT=9999`, commands go over TCP (`nc localhost 9999` or `m
 | `pause` / `start` | Pause / resume emulation |
 | `cpu_stats` | Guest instruction rate, util %, sim speed |
 | `cpu_stats_reset` | Reset rate baseline |
+| `imu_stream_start` / `stop` / `status` | Background IMU feeder (phase 2a) |
+| `imu_burst` / `imu_tick` | Batched / single IMU + DRDY |
 | `sysbus.cpu PC` | Program counter |
 | `currentTime` | Virtual + host time |
 | `quit` | Exit Renode |
@@ -142,9 +144,26 @@ start
 
 Stock Antmicro Renode packages lack Crazyflie models (`BMI088_*`, `BMP388`, `CF_Syslink`). This project builds [bitcraze/renode](https://github.com/bitcraze/renode/tree/crazyflie) branch `crazyflie` with pinned Infrastructure / resources commits (see `setup_renode_cf.sh`).
 
-## Non-goals
+## Phase 2a — external IMU injection (before Webots)
 
-- Webots / Gazebo closed-loop flight  
+```bash
+RENODE_MONITOR_PORT=9999 DOCKER=1 ./scripts/run_first_test.sh   # terminal 1
+./scripts/inject_imu_stream.sh 9999                             # terminal 2
+```
+
+Starts an in-Renode IMU feeder (`imu_stream_start`) so rate is not limited by monitor TCP RTTs.
+Expect `out_hz≈100`. Owns the `-P` socket (exclusive with `monitor_cpu.sh`). Fallback: `--mode burst`.
+
+## Phase 2 docs (Webots closed loop)
+
+| Doc | Content |
+|-----|---------|
+| [FLIGHT_MIN.md](FLIGHT_MIN.md) | Minimum sensors/actuators for init → arm → fly |
+| [WEBOTS_BRIDGE.md](WEBOTS_BRIDGE.md) | Plan to connect Renode (Docker) ↔ Webots via a host bridge |
+
+## Non-goals (phase 1)
+
+- Webots / Gazebo closed-loop flight (see phase 2 docs)  
 - Full Crazyradio / nRF stack  
 - Expansion decks  
 - PX4 / QEMU swarm work  

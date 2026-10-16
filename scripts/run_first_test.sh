@@ -165,7 +165,7 @@ mach create "CF2.1"
 machine LoadPlatformDescription @platforms/boards/cf2.repl
 
 sysbus.otp WriteString 0x7800 "0;CF21"
-showAnalyzer sysbus.usart3
+# Avoid showAnalyzer -- it can block when Renode has no console/TTY (-P mode).
 sysbus LoadELF @cf2.elf
 
 emulation CreateUARTHub "syslink"
@@ -177,26 +177,22 @@ machine StartGdbServer 3333
 emulation CreateServerSocketTerminal 3456 "sensors"
 connector Connect sysbus.i2c3.bmi_gyro sensors
 
-logLevel -1 console sysbus.gpioPortD.ledB
-logLevel -1 console sysbus.gpioPortC.ledRL
-logLevel -1 console sysbus.gpioPortC.ledGL
-logLevel -1 console sysbus.gpioPortC.ledGR
-logLevel -1 console sysbus.gpioPortC.ledRR
-logLevel -1 console sysbus.rtc
-logLevel -1 console sysbus.timer7
-
 sysbus.i2c3.bmi_gyro FeedGyroSample 10 20 30 2
 sysbus.i2c3.bmi_gyro FeedGyroSample 0 0 0 20
 sysbus.i2c3.bmi_accel FeedAccSample 0 0 1000 20
 sysbus.i2c3.bmp_baro FeedPTSample 101325 25 20
 
 echo "Phase 1 loaded. GDB :3333  sensor socket :3456"
-echo "Monitor tips: pause | cpu_stats | sysbus.cpu PC | start | quit"
+echo "Monitor tips: pause | cpu_stats | imu_stream_start | quit"
 echo "Feed more: sysbus.i2c3.bmi_gyro FeedGyroSample 0 0 0 10"
 EOF
 
 if [ "${AUTO_START}" = "1" ]; then
-  echo 'start' >> "${RENODE_DIR}/crazyflie_canned.resc"
+  # Quiet USB/unhandled WARNING spam AFTER start so "Machine started." still logs.
+  {
+    echo 'start'
+    echo 'logLevel 3'
+  } >> "${RENODE_DIR}/crazyflie_canned.resc"
 fi
 
 echo "=== Crazyflie Renode first test ==="
@@ -208,15 +204,20 @@ echo "  quit:   type quit in the Renode monitor to exit"
 if [ -n "${RENODE_MONITOR_PORT}" ]; then
   echo "  monitor: nc localhost ${RENODE_MONITOR_PORT}"
   echo "  stats:   ./scripts/monitor_cpu.sh ${RENODE_MONITOR_PORT}"
+  echo "  imu:     ./scripts/inject_imu_stream.sh ${RENODE_MONITOR_PORT}   # phase 2a (exclusive with stats)"
 fi
 echo
-echo "Monitor (at the CF2.1 prompt):"
-echo "  1) pause          # stop emulation so typing is readable"
-echo "  2) cpu_stats       # instruction rate / util % / sim speed"
-echo "  3) sysbus.cpu PC  # program counter (run twice to compare)"
-echo "  4) start          # resume"
+echo "Monitor (via -P socket / nc — not the Docker log TTY):"
+echo "  pause | start | quit | cpu_stats | calib_status | preflight_status | imu_stream_*"
 echo "  Wrong: exit, Ctrl+C, tui — use quit"
 echo
+echo "Phase 2a (wait for Renode log: Machine started):"
+echo "  ./scripts/inject_imu_stream.sh ${RENODE_MONITOR_PORT:-9999}"
+echo "  calib:     ./scripts/check_calib.sh ${RENODE_MONITOR_PORT:-9999}"
+echo "  preflight: ./scripts/check_preflight.sh ${RENODE_MONITOR_PORT:-9999}"
+echo
+
+
 
 cd "${RENODE_DIR}"
 check_ports

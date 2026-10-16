@@ -23,4 +23,4 @@ RENODE_MONITOR_PORT=9999 DOCKER=1 ./scripts/run_first_test.sh
 
 ## Not in phase 1
 
-Webots bridge, Gazebo, radio, decks — see README Non-goals.
+Webots bridge, Gazebo, radio, decks — see [FLIGHT_MIN.md](FLIGHT_MIN.md) and [WEBOTS_BRIDGE.md](WEBOTS_BRIDGE.md).
