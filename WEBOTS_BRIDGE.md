@@ -1,4 +1,9 @@
-# Phase 2 plan — Renode ↔ Webots closed loop
+# Renode ↔ Webots closed loop (design reference)
+
+> **Status (2026-10):** Level closed-loop hover works. Prefer
+> [README.md](README.md) + [PURE_FW_LOOP.md](PURE_FW_LOOP.md) for the as-built
+> demo, and [ORCHESTRATION.md](ORCHESTRATION.md) for probes / automation.
+> This file remains the detailed design and bring-up history.
 
 Goal: make Crazyflie firmware running in **Renode (Docker)** believe it is flying a quadrotor whose plant lives in **Webots on the host** (or another container). Sensors in Webots drive Renode IMU/baro; motor commands from Renode drive Webots props.
 
@@ -186,7 +191,7 @@ loop:
 |------|----------|
 | `sensors-only` | Webots pose → IMU; motors ignored / zero thrust — prove calib + estimator |
 | `motors-open-loop` | Fixed setpoint in FW or bridge; motors → Webots; IMU from Webots — first “lift” |
-| `closed-loop` | Full loop + hover setpoint maintenance |
+| `closed-loop` | Host RPYT setpoint only; FW mixer → props 1:1 (see `PURE_FW_LOOP.md`) |
 
 ---
 
@@ -216,19 +221,17 @@ loop:
 1. **Setpoint source (Option C):** monitor `setpoint_rpyt` / `setpoint_hover` overwrites
    FreeRTOS `setpointQueue` storage + refreshes timestamp (beats commander WDT).  
 2. Bridge `--mode closed-loop` clears `motor_force`, injects RPYT each loop, reads
-   `motor_stats`, applies thrusts to Webots/FakePlant, feeds IMU back.  
-3. Tune `ThrustMap.k` / frames; optional baro altitude assist later.  
-**Exit:** CF firmware remains in flying state; Webots hover roughly stable for N seconds.
+   `motor_stats`, applies **per-motor** FW ratios to Webots/FakePlant, feeds IMU/baro.  
+3. Default `--alt-hold`: host PD on plant altitude → thrust setpoint; FW attitude
+   mixer owns m1..m4. Optional `--fw-zdist` for FW Absolute-Z. See `PURE_FW_LOOP.md`.  
+**Exit:** hover near `--alt-target` with FW per-motor mix and live IMU feedback.
 
 ```bash
-# FakePlant closed-loop (no Webots)
-python3 -m bridge.webots_renode_bridge --fake --mode closed-loop \
-  --wait-preflight --thrust 35000 --seconds 45
+# Webots altitude hold (FW motors 1:1)
+FAKE=0 ALT=0.5 ./scripts/run_hover_demo.sh
 
-# Webots closed-loop
-# (Webots: open cf_hover.wbt) then:
-python3 -m bridge.webots_renode_bridge --mode closed-loop \
-  --wait-preflight --thrust 35000
+# FakePlant
+FAKE=1 ALT=0.5 SECONDS_RUN=50 ./scripts/run_hover_demo.sh
 ```
 
 ### Phase 2e — Hardening (later)

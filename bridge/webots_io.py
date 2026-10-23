@@ -13,6 +13,8 @@ import math
 from dataclasses import dataclass, field
 
 from .frames import (
+    AxisMap,
+    LowPass3,
     Vec3,
     altitude_m_to_pressure_pa,
     m_s2_to_bmi_accel_units,
@@ -88,11 +90,19 @@ class WebotsPlant:
     # Official hover ω ≈ 55 rad/s. Map FW ratio 0.55 (≈36k thrust) → ~55.
     MOTOR_OMEGA_SCALE = 100.0  # rad/s at ratio=1.0
 
-    def __init__(self, robot, thrust_map: ThrustMap | None = None):
+    def __init__(
+        self,
+        robot,
+        thrust_map: ThrustMap | None = None,
+        axis_map: AxisMap | None = None,
+        gyro_lpf_tau_s: float = 0.02,
+    ):
         self.robot = robot
         self.thrust_map = thrust_map or ThrustMap(mass_kg=0.05, k=0.405)
         self.timestep = int(robot.getBasicTimeStep())
         self._motor_dbg = 0
+        self.axis_map = axis_map or AxisMap()
+        self._gyro_lpf = LowPass3(tau_s=gyro_lpf_tau_s)
 
         self._gyro = self._device("gyro")
         self._imu = self._device("inertial_unit")
@@ -126,11 +136,14 @@ class WebotsPlant:
 
         self._prev_gps = None
         self._prev_t = None
+        self._prev_vel = None
         self._lin_acc_world = Vec3(0.0, 0.0, 0.0)
+        self._last_sensor_t = None
         found = sum(1 for m in self._motors if m is not None)
         print(
             f"WebotsPlant(Crazyflie): motors={found}/4 "
-            f"gyro={bool(self._gyro)} imu={bool(self._imu)} gps={bool(self._gps)}",
+            f"gyro={bool(self._gyro)} imu={bool(self._imu)} gps={bool(self._gps)} "
+            f"gyro_lpf_tau={gyro_lpf_tau_s:.3f}s",
             flush=True,
         )
 
@@ -165,13 +178,12 @@ class WebotsPlant:
                 vx = (p[0] - self._prev_gps[0]) / dt
                 vy = (p[1] - self._prev_gps[1]) / dt
                 vz = (p[2] - self._prev_gps[2]) / dt
-                if not hasattr(self, "_prev_vel"):
+                if self._prev_vel is None:
                     self._prev_vel = (vx, vy, vz)
                 else:
                     ax = (vx - self._prev_vel[0]) / dt
                     ay = (vy - self._prev_vel[1]) / dt
                     az = (vz - self._prev_vel[2]) / dt
-                    # Light low-pass
                     a = 0.3
                     self._lin_acc_world = Vec3(
                         a * ax + (1 - a) * self._lin_acc_world.x,
@@ -188,29 +200,44 @@ class WebotsPlant:
         g = 9.81
         self._update_lin_acc()
         alt = self._altitude()
+        t = float(self.robot.getTime())
+        dt = 0.0
+        if self._last_sensor_t is not None:
+            dt = max(0.0, t - self._last_sensor_t)
+        self._last_sensor_t = t
 
-        # Gyro
+        # Gyro: Webots body rad/s → DPS for Renode BMI088, then axis map + LPF.
         if self._gyro:
             w = self._gyro.getValues()
             gyro = rad_s_to_bmi_gyro_units(Vec3(w[0], w[1], w[2]))
+            gyro = self.axis_map.apply(gyro)
+            gyro = self._gyro_lpf.update(gyro, dt if dt > 0 else self.timestep_s)
         else:
             gyro = Vec3(0.0, 0.0, 0.0)
 
-        # Accelerometer: proper acceleration in body frame.
+        # Accelerometer: proper acceleration in body frame (milli-g).
+        nearly_still = (
+            self._prev_vel is not None
+            and abs(self._prev_vel[0]) < 0.05
+            and abs(self._prev_vel[1]) < 0.05
+            and abs(self._prev_vel[2]) < 0.05
+            and abs(gyro.x) < 5.0
+            and abs(gyro.y) < 5.0
+            and abs(gyro.z) < 5.0
+        )
         if self._accel:
             a = self._accel.getValues()
             accel = m_s2_to_bmi_accel_units(Vec3(a[0], a[1], a[2]), g=g)
+        elif nearly_still:
+            # Avoid GPS finite-difference spikes at rest (hurts FW estimator).
+            accel = Vec3(0.0, 0.0, 1000.0)
         else:
-            # Specific force ≈ R^T * (a_world - g_world) with g_world=(0,0,-g)
-            # At rest upright: expect ~ (0,0,+g) in body if Z-up.
             ax_w = self._lin_acc_world.x
             ay_w = self._lin_acc_world.y
-            az_w = self._lin_acc_world.z + g  # proper accel includes opposing gravity
+            az_w = self._lin_acc_world.z + g
             if self._imu is not None and self._node is not None:
                 try:
-                    # Use orientation matrix body<-world via conjugate of getOrientation
                     ori = self._node.getOrientation()  # body→world 3x3 row-major
-                    # F_body = R^T * F_world
                     fx = ori[0] * ax_w + ori[3] * ay_w + ori[6] * az_w
                     fy = ori[1] * ax_w + ori[4] * ay_w + ori[7] * az_w
                     fz = ori[2] * ax_w + ori[5] * ay_w + ori[8] * az_w
@@ -219,6 +246,7 @@ class WebotsPlant:
                     accel = Vec3(0.0, 0.0, 1000.0)
             else:
                 accel = Vec3(0.0, 0.0, 1000.0)
+        accel = self.axis_map.apply(accel)
 
         return SensorSample(
             gx=gyro.x, gy=gyro.y, gz=gyro.z,
@@ -285,12 +313,15 @@ class WebotsPlant:
             out.append(0.0)
         return (out[0], out[1], out[2], out[3])
 
-    def unstick_for_takeoff(self, xyz=(0.0, 0.0, 0.18)) -> None:
+    def unstick_for_takeoff(self, xyz=(0.0, 0.0, 0.18), force: bool = False) -> None:
         """
-        After a long sit, floor contact can lock the craft so propeller thrust
-        never lifts it. Nudge slightly above the floor once before takeoff.
+        After a long sit (or a crash), floor contact can lock the craft so
+        propeller thrust never lifts it. Nudge slightly above the floor.
+        Re-allowed when force=True or after we have been near the floor again.
         """
-        if getattr(self, "_unstuck", False) or self._node is None:
+        if self._node is None:
+            return
+        if getattr(self, "_unstuck", False) and not force:
             return
         try:
             field = self._node.getField("translation")
@@ -299,13 +330,34 @@ class WebotsPlant:
             rot = self._node.getField("rotation")
             if rot is not None:
                 rot.setSFRotation([0, 0, 1, 0])
+            # Clear residual velocity if supervisor API allows.
+            if hasattr(self._node, "resetPhysics"):
+                try:
+                    self._node.resetPhysics()
+                except Exception:
+                    pass
             self._unstuck = True
             print(f"WebotsPlant: unstick_for_takeoff {xyz}", flush=True)
         except Exception as exc:
             print(f"WebotsPlant: unstick failed ({exc})", flush=True)
 
+    def maybe_allow_reunstick(self, alt_m: float) -> None:
+        """After settling back on the floor, permit another unstick nudge."""
+        if alt_m < 0.05:
+            self._floor_sit = getattr(self, "_floor_sit", 0) + 1
+            if self._floor_sit > 25:  # ~2 s at 12 Hz
+                self._unstuck = False
+                self._floor_sit = 0
+        else:
+            self._floor_sit = 0
 
-def open_plant(prefer_webots: bool = True, thrust_map: ThrustMap | None = None):
+
+def open_plant(
+    prefer_webots: bool = True,
+    thrust_map: ThrustMap | None = None,
+    axis_map: AxisMap | None = None,
+    gyro_lpf_tau_s: float = 0.02,
+):
     if prefer_webots:
         try:
             try:
@@ -316,7 +368,12 @@ def open_plant(prefer_webots: bool = True, thrust_map: ThrustMap | None = None):
                 from controller import Robot  # type: ignore
 
                 robot = Robot()
-            return WebotsPlant(robot, thrust_map=thrust_map)
+            return WebotsPlant(
+                robot,
+                thrust_map=thrust_map,
+                axis_map=axis_map,
+                gyro_lpf_tau_s=gyro_lpf_tau_s,
+            )
         except Exception as exc:
             print(f"open_plant: Webots unavailable ({exc}); FakePlant", flush=True)
     tm = thrust_map or ThrustMap(mass_kg=0.05, k=0.49)

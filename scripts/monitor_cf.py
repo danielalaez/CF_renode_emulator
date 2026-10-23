@@ -487,6 +487,13 @@ _SP_OFF_ATT_PITCH = 12
 _SP_OFF_ATT_YAW = 16
 _SP_OFF_RATE_YAW = 32
 _SP_OFF_THRUST = 52
+# point_t / velocity_t include a timestamp word; x/y/z follow (DWARF on cf2.elf)
+_SP_OFF_POS_X = 60
+_SP_OFF_POS_Y = 64
+_SP_OFF_POS_Z = 68
+_SP_OFF_VEL_X = 76
+_SP_OFF_VEL_Y = 80
+_SP_OFF_VEL_Z = 84
 _SP_OFF_VEL_BODY = 120
 _SP_OFF_MODE_X = 121
 _SP_OFF_MODE_Y = 122
@@ -579,6 +586,57 @@ def mc_setpoint_rpyt(roll, pitch, yaw, thrust):
          _COMMANDER_PRIORITY_CRTP, tick)
 
 
+def _pack_zdist_setpoint(bus, base, roll, pitch, yaw_rate, z_m, tick):
+    """
+    CRTP zDistance-style: absolute height + attitude.
+    mode.z=Abs -> FW position PID owns collective thrust; attitude mixer owns m1..m4.
+    """
+    _zero_setpoint_blob(bus, base)
+    bus.WriteDoubleWord(base + _SP_OFF_TIMESTAMP, long(tick) & 0xFFFFFFFF)
+    _write_f32(bus, base + _SP_OFF_ATT_ROLL, float(roll))
+    _write_f32(bus, base + _SP_OFF_ATT_PITCH, float(pitch))
+    _write_f32(bus, base + _SP_OFF_ATT_YAW, 0.0)
+    _write_f32(bus, base + _SP_OFF_RATE_YAW, -float(yaw_rate))
+    _write_f32(bus, base + _SP_OFF_THRUST, 0.0)  # unused when mode.z != Disable
+    _write_f32(bus, base + _SP_OFF_POS_X, 0.0)
+    _write_f32(bus, base + _SP_OFF_POS_Y, 0.0)
+    _write_f32(bus, base + _SP_OFF_POS_Z, float(z_m))
+    bus.WriteByte(base + _SP_OFF_VEL_BODY, 0)
+    bus.WriteByte(base + _SP_OFF_MODE_X, _MODE_DISABLE)
+    bus.WriteByte(base + _SP_OFF_MODE_Y, _MODE_DISABLE)
+    bus.WriteByte(base + _SP_OFF_MODE_Z, _MODE_ABS)
+    bus.WriteByte(base + _SP_OFF_MODE_ROLL, _MODE_ABS)
+    bus.WriteByte(base + _SP_OFF_MODE_PITCH, _MODE_ABS)
+    bus.WriteByte(base + _SP_OFF_MODE_YAW, _MODE_VELOCITY)
+
+
+def mc_setpoint_zdist(roll, pitch, yaw, z):
+    """Inject absolute-Z + attitude setpoint (FW altitude hold via baro estimate)."""
+    machine = _require_machine()
+    if machine is None:
+        return
+    bus = machine.SystemBus
+    tick = 0
+    paused = machine.ObtainPausedState()
+    try:
+        tick = long(bus.ReadDoubleWord(_XTICK_COUNT_ADDR))
+        _pack_zdist_setpoint(
+            bus, _SETPOINT_QUEUE_STORAGE,
+            float(roll), float(pitch), float(yaw), float(z), tick,
+        )
+        _pack_zdist_setpoint(
+            bus, _STABILIZER_SETPOINT,
+            float(roll), float(pitch), float(yaw), float(z), tick,
+        )
+        bus.WriteDoubleWord(_PRIORITY_QUEUE_STORAGE, _COMMANDER_PRIORITY_CRTP)
+    finally:
+        paused.Dispose()
+    print (
+        "setpoint_zdist roll=%.2f pitch=%.2f yaw=%.2f z=%.3f prio=%d tick=%d"
+    ) % (float(roll), float(pitch), float(yaw), float(z),
+         _COMMANDER_PRIORITY_CRTP, tick)
+
+
 def mc_setpoint_hover(thrust=35000):
     """Level attitude + fixed thrust (hover-ish open attitude)."""
     mc_setpoint_rpyt(0, 0, 0, thrust)
@@ -618,6 +676,7 @@ def mc_setpoint_stats():
         roll = _read_f32(bus, base + _SP_OFF_ATT_ROLL)
         pitch = _read_f32(bus, base + _SP_OFF_ATT_PITCH)
         yaw_rate = _read_f32(bus, base + _SP_OFF_RATE_YAW)
+        z = _read_f32(bus, base + _SP_OFF_POS_Z)
         mx = int(bus.ReadByte(base + _SP_OFF_MODE_X))
         my = int(bus.ReadByte(base + _SP_OFF_MODE_Y))
         mz = int(bus.ReadByte(base + _SP_OFF_MODE_Z))
@@ -629,6 +688,6 @@ def mc_setpoint_stats():
     finally:
         paused.Dispose()
     print (
-        "thrust=%.0f roll=%.2f pitch=%.2f yaw_rate=%.2f "
+        "thrust=%.0f roll=%.2f pitch=%.2f yaw_rate=%.2f z=%.3f "
         "mode=xy%d%d z%d rpy%d%d%d prio=%d ts=%d tick=%d age=%d"
-    ) % (thr, roll, pitch, yaw_rate, mx, my, mz, mr, mp, myaw, prio, ts, tick, age)
+    ) % (thr, roll, pitch, yaw_rate, z, mx, my, mz, mr, mp, myaw, prio, ts, tick, age)

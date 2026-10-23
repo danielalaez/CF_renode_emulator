@@ -128,6 +128,21 @@ class RenodeBridge:
             or ""
         )
 
+    def inject_setpoint_zdist(
+        self,
+        roll: float = 0.0,
+        pitch: float = 0.0,
+        yaw_rate: float = 0.0,
+        z_m: float = 0.5,
+    ) -> str:
+        """Absolute-Z + attitude (CRTP zDistance). FW position PID owns thrust."""
+        return (
+            self.client.query(
+                f"setpoint_zdist {roll} {pitch} {yaw_rate} {z_m}"
+            )
+            or ""
+        )
+
     def inject_setpoint_hover(self, thrust: float = 35000.0) -> str:
         return self.client.query(f"setpoint_hover {thrust}") or ""
 

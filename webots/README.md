@@ -14,7 +14,10 @@ Host bridge      ──RPYT(+alt)─►  setpoint injection (no Crazyradio)
 
 - **Actuators:** FW ratios → motor ω with Bitcraze signs; Propeller `thrustConstants` produce lift/torque in Webots physics.
 - **Sensors:** Webots gyro (+ derived accel from GPS/attitude) → Renode `imu_stream_set`.
-- **Commands:** `closed-loop` injects RPYT into the commander; optional `--alt-target` trims thrust like a throttle stick (FW still mixes attitude).
+- **Commands:** `closed-loop` injects RPYT; default `--alt-hold` trims thrust like a
+  throttle stick to hold `ALT` (FW attitude mixer still owns m1..m4).
+
+See [../README.md](../README.md) and [../ORCHESTRATION.md](../ORCHESTRATION.md).
 
 ## Hover demo
 
@@ -22,14 +25,17 @@ Host bridge      ──RPYT(+alt)─►  setpoint injection (no Crazyradio)
 cd renode_test
 export WEBOTS_HOME=$HOME/.local/webots-R2025a
 
-# FW-driven props + official model (default MODE=closed-loop)
-SECONDS_RUN=70 ALT=0.5 ./scripts/run_hover_demo.sh
+# FW-driven props + official model (default closed-loop + alt-hold)
+FAKE=0 ALT=0.5 SECONDS_RUN=45 ./scripts/run_hover_demo.sh
+
+# JSONL probes for orchestration
+TELEMETRY=/tmp/cf_bridge.jsonl FAKE=0 ALT=0.5 ./scripts/run_hover_demo.sh
 
 # Bypass FW mixer (debug plant only)
 MODE=motors-open-loop SECONDS_RUN=40 ALT=0.5 ./scripts/run_hover_demo.sh
 
 # No GUI
-FAKE=1 MODE=closed-loop SECONDS_RUN=35 ALT=0.5 ./scripts/run_hover_demo.sh
+FAKE=1 ALT=0.5 SECONDS_RUN=50 ./scripts/run_hover_demo.sh
 ```
 
 ## Manual

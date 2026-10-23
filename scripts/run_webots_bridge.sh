@@ -15,8 +15,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORLD="${WORLD:-$ROOT/webots/worlds/cf_hover.wbt}"
 MODE_ARGS=("${@:-}")
 if [[ ${#MODE_ARGS[@]} -eq 0 || "${MODE_ARGS[0]:-}" == "" ]]; then
-  # Conservative defaults — high loop-hz + Webots realtime can freeze a laptop.
-  MODE_ARGS=(--mode motors-open-loop --force-ratio 0.55 --wait-preflight --imu-hz 100 --loop-hz 20 --seconds 60)
+  # FW Absolute-Z alt-hold + attitude mixer → props 1:1 (see PURE_FW_LOOP.md).
+  MODE_ARGS=(--mode closed-loop --alt-hold --alt-target 0.5 --wait-preflight --imu-hz 80 --loop-hz 12 --seconds 45)
 fi
 
 find_webots() {

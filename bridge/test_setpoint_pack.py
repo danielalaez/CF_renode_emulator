@@ -13,9 +13,11 @@ from bridge.setpoint import (
     OFF_MODE_ROLL,
     OFF_MODE_YAW,
     OFF_MODE_Z,
+    OFF_POS_Z,
     OFF_THRUST,
     RpytSetpoint,
     SETPOINT_SIZE,
+    ZdistSetpoint,
 )
 
 
@@ -34,7 +36,14 @@ def main() -> int:
     assert abs(back.yaw_rate_deg_s - 10.0) < 1e-5
     assert abs(back.thrust - 35000.0) < 1e-3
     assert back.timestamp == 12345
-    print("ok setpoint pack/unpack")
+
+    zd = ZdistSetpoint(roll_deg=0.0, pitch_deg=0.0, yaw_rate_deg_s=0.0, z_m=0.5, timestamp=99)
+    zb = zd.pack()
+    assert zb[OFF_MODE_Z] == MODE_ABS
+    assert abs(struct.unpack_from("<f", zb, OFF_POS_Z)[0] - 0.5) < 1e-6
+    zb2 = ZdistSetpoint.unpack(zb)
+    assert abs(zb2.z_m - 0.5) < 1e-6
+    print("ok setpoint pack/unpack (rpyt + zdist)")
     return 0
 
 

@@ -23,7 +23,7 @@ if _ROOT not in sys.path:
 
 # Default closed-loop when launched from Webots GUI
 if "--mode" not in sys.argv:
-    sys.argv.extend(["--mode", "closed-loop", "--thrust", "35000"])
+    sys.argv.extend(["--mode", "closed-loop", "--thrust", "30500"])
 
 from bridge.webots_renode_bridge import main  # noqa: E402
 

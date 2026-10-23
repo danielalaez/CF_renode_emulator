@@ -8,8 +8,12 @@ cd "$ROOT"
 FAKE="${FAKE:-0}"
 SECONDS_RUN="${SECONDS_RUN:-45}"
 ALT="${ALT:-0.5}"
-# closed-loop: Renode FW mixer drives Webots m1_motor..m4_motor (Propeller physics)
+# closed-loop: FW Absolute-Z + attitude mixer → Webots m1..m4 1:1
 MODE="${MODE:-closed-loop}"
+# ALT_HOLD=1 (default): host PD altitude via thrust; FW attitude mixer -> props
+# FW_ZDIST=1: FW Absolute-Z setpoint (experimental; needs working baro fusion)
+ALT_HOLD="${ALT_HOLD:-1}"
+FW_ZDIST="${FW_ZDIST:-0}"
 PORT="${RENODE_MONITOR_PORT:-9999}"
 
 export WEBOTS_HOME="${WEBOTS_HOME:-$HOME/.local/webots-R2025a}"
@@ -18,7 +22,7 @@ export LD_LIBRARY_PATH="${WEBOTS_HOME}/lib/controller:${WEBOTS_HOME}/lib/webots$
 export DISPLAY="${DISPLAY:-:0}"
 
 echo "== hover demo =="
-echo "  FAKE=$FAKE MODE=$MODE ALT=${ALT}m SECONDS=$SECONDS_RUN"
+echo "  FAKE=$FAKE MODE=$MODE ALT_HOLD=$ALT_HOLD FW_ZDIST=$FW_ZDIST ALT=${ALT}m SECONDS=$SECONDS_RUN"
 echo "  World uses official Bitcraze Crazyflie PROTO (props + motors)."
 
 # --- Renode ---
@@ -48,18 +52,33 @@ BRIDGE_ARGS=(
   --wait-preflight
   --imu-hz 80
   --loop-hz 12
-  --alt-target "$ALT"
-  --alt-kp "${ALT_KP:-0.40}"
-  --alt-kd "${ALT_KD:-0.90}"
   --seconds "$SECONDS_RUN"
   --status-every 2
   --port "$PORT"
+  --gyro-sign "${GYRO_SIGN:-1,1,1}"
+  --gyro-lpf-tau "${GYRO_LPF_TAU:-0.02}"
 )
+if [[ -n "${TELEMETRY:-}" ]]; then
+  BRIDGE_ARGS+=(--telemetry "$TELEMETRY")
+fi
 if [[ "$MODE" == "closed-loop" ]]; then
-  # Base RPYT thrust; --alt-target trims it like a pilot stick while FW runs attitude/mixer
-  BRIDGE_ARGS+=(--thrust "${THRUST:-32000}")
+  BRIDGE_ARGS+=(
+    --thrust "${THRUST:-30500}"
+    --hover-thrust "${HOVER_THRUST:-30000}"
+    --roll "${ROLL:-0}" --pitch "${PITCH:-0}" --yaw-rate "${YAW_RATE:-0}"
+    --alt-target "$ALT"
+    --alt-kp "${ALT_KP:-0.40}" --alt-kd "${ALT_KD:-1.10}" --alt-ki "${ALT_KI:-0.04}"
+  )
+  if [[ "$FW_ZDIST" == "1" ]]; then
+    BRIDGE_ARGS+=(--fw-zdist --no-alt-hold)
+  elif [[ "$ALT_HOLD" == "1" ]]; then
+    BRIDGE_ARGS+=(--alt-hold)
+  else
+    BRIDGE_ARGS+=(--no-alt-hold)
+  fi
 else
-  BRIDGE_ARGS+=(--force-ratio 0)  # use hover map baseline
+  BRIDGE_ARGS+=(--force-ratio 0 --alt-target "$ALT"
+    --alt-kp "${ALT_KP:-0.40}" --alt-kd "${ALT_KD:-0.90}")
 fi
 
 WEBOTS_PID=""
