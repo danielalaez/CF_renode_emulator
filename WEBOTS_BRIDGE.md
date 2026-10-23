@@ -270,7 +270,6 @@ FAKE=1 ALT=0.5 SECONDS_RUN=50 ./scripts/run_hover_demo.sh
 - Pixel-perfect CF aerodynamics  
 - Full Crazyradio stack  
 - Deck ecosystem  
-- Replacing PX4/`qemu_test` work  
 
 ---
 

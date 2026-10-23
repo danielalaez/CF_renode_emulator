@@ -12,7 +12,7 @@ Run **real Crazyflie firmware** (`cf2.elf`) in Bitcraze Renode (Docker) against 
 Firmware **attitude** stabilization uses the IMU. The host only trims **thrust**
 like a radio stick to hold height (~0.5 m). See [PURE_FW_LOOP.md](PURE_FW_LOOP.md).
 
-**Audience:** colleagues bringing up the demo, and anyone wiring orchestration /
+**Orchestration:** To bring up the demo and/or wiring orchestration /
 probes (see [ORCHESTRATION.md](ORCHESTRATION.md)).
 
 ---
@@ -94,7 +94,6 @@ python3 -m bridge.webots_renode_bridge --mode closed-loop --alt-hold \
 | [FLIGHT_MIN.md](FLIGHT_MIN.md) | Minimum sensors/actuators for CF on Renode |
 | [bridge/README.md](bridge/README.md) | Bridge CLI & package layout |
 | [webots/README.md](webots/README.md) | World / PROTO notes |
-| [MVP.md](MVP.md) | Early milestone notes |
 
 ---
 

@@ -20,11 +20,13 @@ Notes for automating process bring-up and inspecting the data path between
                                          └─────────────────┘
 ```
 
-| Process | How to start | Owns |
-|---------|--------------|------|
-| Renode | `RENODE_MONITOR_PORT=9999 DOCKER=1 ./scripts/run_first_test.sh` | Guest FW, virt-time, `:9999`, `:3456`, `:3333` |
-| Webots | `run_hover_demo.sh` or `webots --mode=realtime …/cf_hover.wbt` | Physics, props, sensors |
-| Bridge | same demo script / `python3 -m bridge.webots_renode_bridge …` | Monitor client, motor apply, IMU set, setpoints |
+
+| Process | How to start                                                    | Owns                                            |
+| ------- | --------------------------------------------------------------- | ----------------------------------------------- |
+| Renode  | `RENODE_MONITOR_PORT=9999 DOCKER=1 ./scripts/run_first_test.sh` | Guest FW, virt-time, `:9999`, `:3456`, `:3333`  |
+| Webots  | `run_hover_demo.sh` or `webots --mode=realtime …/cf_hover.wbt`  | Physics, props, sensors                         |
+| Bridge  | same demo script / `python3 -m bridge.webots_renode_bridge …`   | Monitor client, motor apply, IMU set, setpoints |
+
 
 Suggested orchestration order:
 
@@ -38,16 +40,20 @@ Ready-made: `./scripts/run_hover_demo.sh` already does (2)+(3)+(4).
 
 ---
 
+
+
 ## 2. Hard constraint: one monitor client
 
 Renode `-P 9999` allows **one** telnet client. Whoever connects owns all
 `cpu_stats` / `motor_stats` / `imu_stream_*` / `setpoint_*` traffic.
 
-| During | Who should own `:9999` |
-|--------|-------------------------|
-| Flight / closed-loop | **Bridge only** |
-| Renode-only CPU profiling | `./scripts/monitor_cpu.sh 9999` |
-| Motor force experiments | `./scripts/monitor_motors.sh` (not with bridge) |
+
+| During                    | Who should own `:9999`                          |
+| ------------------------- | ----------------------------------------------- |
+| Flight / closed-loop      | **Bridge only**                                 |
+| Renode-only CPU profiling | `./scripts/monitor_cpu.sh 9999`                 |
+| Motor force experiments   | `./scripts/monitor_motors.sh` (not with bridge) |
+
 
 **Do not** attach a second `nc`/`monitor_cpu` while the bridge flies — it will
 steal or kill the session.
@@ -57,7 +63,11 @@ extend the bridge to multiplex stats into that stream.
 
 ---
 
+
+
 ## 3. Data-flow probe points
+
+
 
 ### 3.1 Signals on the wire (logical)
 
@@ -78,14 +88,18 @@ gyro, accel, pressure ──► imu_stream_set ──► BMI088 / BMP388 models
 GPS alt ──► host altitude PD ──► thrust (next setpoint)
 ```
 
-| Tap | Source today | Fields |
-|-----|--------------|--------|
-| A. Setpoint out | Bridge → `setpoint_rpyt` / `setpoint_stats` | roll, pitch, yaw_rate, thrust, mode.z |
-| B. Motors FW→plant | `motor_stats` / bridge `last_motors` | m1..m4 ratios 0..1 |
-| C. Props commanded | `WebotsPlant.motor_velocities()` | ω rad/s (signed) |
-| D. Plant state | `SensorSample` / GPS | alt, vz (derived), ax/ay/az, gx/gy/gz, P |
-| E. IMU into FW | `imu_stream_set` / `imu_stream_status` | sample + virt_hz / out_hz |
-| F. Renode perf | `cpu_stats` | rate, util%, **sim_speed**, virt, host |
+
+| Tap                | Source today                                | Fields                                   |
+| ------------------ | ------------------------------------------- | ---------------------------------------- |
+| A. Setpoint out    | Bridge → `setpoint_rpyt` / `setpoint_stats` | roll, pitch, yaw_rate, thrust, mode.z    |
+| B. Motors FW→plant | `motor_stats` / bridge `last_motors`        | m1..m4 ratios 0..1                       |
+| C. Props commanded | `WebotsPlant.motor_velocities()`            | ω rad/s (signed)                         |
+| D. Plant state     | `SensorSample` / GPS                        | alt, vz (derived), ax/ay/az, gx/gy/gz, P |
+| E. IMU into FW     | `imu_stream_set` / `imu_stream_status`      | sample + virt_hz / out_hz                |
+| F. Renode perf     | `cpu_stats`                                 | rate, util%, **sim_speed**, virt, host   |
+
+
+
 
 ### 3.2 Bridge JSONL telemetry (recommended for automation)
 
@@ -123,12 +137,14 @@ When the bridge is **not** connected:
 # ins  rate/s  util%  mips_cap  sim_speed  pc  virt_s  host_s
 ```
 
-| Field | Meaning |
-|-------|---------|
-| `sim_speed` | Guest virt-time / wall (`1.0` = realtime) |
-| `rate` | Instructions / wall second |
-| `util` | vs configured MIPS cap |
-| `virt` / `host` | Accumulated times |
+
+| Field           | Meaning                                   |
+| --------------- | ----------------------------------------- |
+| `sim_speed`     | Guest virt-time / wall (`1.0` = realtime) |
+| `rate`          | Instructions / wall second                |
+| `util`          | vs configured MIPS cap                    |
+| `virt` / `host` | Accumulated times                         |
+
 
 During flight, either:
 
@@ -141,27 +157,33 @@ motor/IMU fields for a quick live check.
 
 ---
 
+
+
 ## 4. Timing model (not hard lockstep)
 
 - Renode guest advances on **virtual time**; IMU feeder uses `ClockSource` (`virt_hz`).
 - Webots runs `--mode=realtime`.
 - Bridge wall loop ≈ 12 Hz (`--loop-hz`); after each Renode RTT it **catch-up**
-  steps Webots so `sim_time ≈ wall_elapsed` (burst capped at +0.25 s).
+steps Webots so `sim_time ≈ wall_elapsed` (burst capped at +0.25 s).
 
 There is **no** shared discrete timestep between Renode and Webots. Probes should
 log both `t_wall` and Webots `sim` (and optionally Renode `virt` from `cpu_stats`).
 
 ---
 
+
+
 ## 5. Extension hooks (code)
 
-| Goal | Where to hook |
-|------|----------------|
-| Extra logged fields | `bridge/telemetry.py` + emit site in `webots_renode_bridge.py` |
-| Alternate plant | Implement same API as `WebotsPlant` / `FakePlant` (`read_sensors`, `apply_motors`, `step`) |
-| Alternate commander | Replace `_inject_closed_loop` / `_host_alt_thrust` |
-| Monitor commands | Append to `scripts/monitor_cf.py` (re-patched into Renode `monitor.py` at each `run_first_test` / `run_hover_demo`) |
-| Orchestration wrapper | Call `run_hover_demo.sh` or compose Docker + Webots + bridge yourself |
+
+| Goal                  | Where to hook                                                                                                       |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Extra logged fields   | `bridge/telemetry.py` + emit site in `webots_renode_bridge.py`                                                      |
+| Alternate plant       | Implement same API as `WebotsPlant` / `FakePlant` (`read_sensors`, `apply_motors`, `step`)                          |
+| Alternate commander   | Replace `_inject_closed_loop` / `_host_alt_thrust`                                                                  |
+| Monitor commands      | Append to `scripts/monitor_cf.py` (re-patched into Renode `monitor.py` at each `run_first_test` / `run_hover_demo`) |
+| Orchestration wrapper | Call `run_hover_demo.sh` or compose Docker + Webots + bridge yourself                                               |
+
 
 `RenodeBridge` (`bridge/renode_io.py`) is the stable Python API for monitor I/O:
 
@@ -170,22 +192,28 @@ log both `t_wall` and Webots `sim` (and optionally Renode `virt` from `cpu_stats
 
 ---
 
+
+
 ## 6. Environment variables (`run_hover_demo.sh`)
 
-| Variable | Default | Role |
-|----------|---------|------|
-| `FAKE` | `0` | `1` = FakePlant, no Webots |
-| `ALT` | `0.5` | Altitude target (m) |
-| `ALT_HOLD` | `1` | Host thrust PD |
-| `FW_ZDIST` | `0` | Experimental FW Absolute-Z |
-| `SECONDS_RUN` | `45` | Bridge duration |
-| `HOVER_THRUST` | `30000` | Thrust bias for alt-hold |
-| `ROLL` / `PITCH` / `YAW_RATE` | `0` | Attitude setpoints |
-| `RENODE_MONITOR_PORT` | `9999` | Monitor TCP port |
-| `WEBOTS_HOME` | `~/.local/webots-R2025a` | Webots install |
-| `TELEMETRY` | (unset) | Path for bridge JSONL probe file |
+
+| Variable                      | Default                  | Role                             |
+| ----------------------------- | ------------------------ | -------------------------------- |
+| `FAKE`                        | `0`                      | `1` = FakePlant, no Webots       |
+| `ALT`                         | `0.5`                    | Altitude target (m)              |
+| `ALT_HOLD`                    | `1`                      | Host thrust PD                   |
+| `FW_ZDIST`                    | `0`                      | Experimental FW Absolute-Z       |
+| `SECONDS_RUN`                 | `45`                     | Bridge duration                  |
+| `HOVER_THRUST`                | `30000`                  | Thrust bias for alt-hold         |
+| `ROLL` / `PITCH` / `YAW_RATE` | `0`                      | Attitude setpoints               |
+| `RENODE_MONITOR_PORT`         | `9999`                   | Monitor TCP port                 |
+| `WEBOTS_HOME`                 | `~/.local/webots-R2025a` | Webots install                   |
+| `TELEMETRY`                   | (unset)                  | Path for bridge JSONL probe file |
+
 
 ---
+
+
 
 ## 7. Checklist for a probed demo run
 
